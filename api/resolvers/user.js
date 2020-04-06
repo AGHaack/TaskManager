@@ -1,12 +1,27 @@
-const { users, tasks } = require('../constants');
-const User = require('../database/models/user');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { combineResolvers } = require('graphql-resolvers');
+
+const User = require('../database/models/user');
+const Task = require('../database/models/task');
+const { isAuthenticated } = require('./middleware');
+const PubSub = require('../subscription');
+const { userEvents } = require('../subscription/events')
 
 module.exports = {
     Query: {
-        users: () => users,
-        user: (_, { id }) => users.find(user => user.id === id)
+        user: combineResolvers(isAuthenticated, async (_, __, { email }) => {
+            try {
+                const user = await User.findOne({ email });
+                if(!user) {
+                    throw new Error('User not found');
+                }
+                return user;
+            } catch(error) {
+                console.log(error);
+                throw error;
+            }
+        })
     },
     Mutation: {
         signup: async (_, { input }) => {
@@ -19,6 +34,9 @@ module.exports = {
                 const hashPass = await bcrypt.hash(input.password, 12);
                 const newUser = new User({...input, password: hashPass });
                 const result = await newUser.save();
+                PubSub.publish(userEvents.USER_CREATED, {
+                    userCreated: result
+                });
                 return result;
             } catch(error) {
                 console.log(error);
@@ -44,7 +62,20 @@ module.exports = {
             }
         }
     },
+    Subscription: {
+        userCreated: {
+            subscribe: () => PubSub.asyncIterator(userEvents.USER_CREATED)
+        }
+    },
     User: {
-        tasks: ({ id }) => tasks.filter(task => task.userId === id)
+        tasks: async ({ id }) => {
+            try {
+                const tasks = await Task.find({ user: id });
+                return tasks;
+            } catch(error) {
+                console.log(error);
+                throw error;
+            }
+        }
     }
 }
